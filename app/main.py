@@ -58,14 +58,21 @@ async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
 
 
 @app.post("/verify")
-async def verify(file: UploadFile = File(...)):
+async def verify(file: UploadFile = File(...), username:str = Form(...)):
+
     content = await file.read()
     live_descriptor = engine.extract_descriptor(content)
     if live_descriptor is None:
         return {"status": "failed", "reason": "No face detected"}
 
     session: Session = SessionLocal()
-    users = session.query(FaceUser).all()
+     # Only select records with this username!
+    users = session.query(FaceUser).filter(FaceUser.name == username).all()
+
+    #users = session.query(FaceUser).all()
+    if not users:
+        session.close()
+        return {"status": "failed", "reason": "User not found"}
 
     best_match = None
     lowest_distance = float("inf")
@@ -91,7 +98,7 @@ async def verify(file: UploadFile = File(...)):
 
     return {
         "status": "failed",
-        "reason": "No match below threshold",
+        "reason": "Face does not match logged-in user",
         "closest_match": best_match,
         "closest_distance": round(lowest_distance, 4)
     }
