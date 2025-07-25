@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from app.models import AppUser
+from app.models import AppUser, Employee
 from app.database import SessionLocal
 from app.auth import verify_password, get_password_hash, create_access_token
 
@@ -40,4 +40,23 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token({"username": db_user.username})
-    return {"access_token": token, "token_type": "bearer"}
+
+    # Fetch the employee record
+    employee = db.query(Employee).filter(Employee.emp_id == db_user.app_emp_id).first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Return token AND essential employee info
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "employee": {
+            "emp_id": employee.emp_id,
+            "emp_name": employee.emp_name,
+            "emp_department": employee.emp_department,
+            "emp_designation": employee.emp_designation,
+            "emp_l1": employee.emp_l1,
+            "emp_l2": employee.emp_l2
+            # ...any other fields you want...
+        }
+    }
