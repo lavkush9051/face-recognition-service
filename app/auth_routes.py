@@ -56,7 +56,16 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
             "emp_department": employee.emp_department,
             "emp_designation": employee.emp_designation,
             "emp_l1": employee.emp_l1,
-            "emp_l2": employee.emp_l2
+            "emp_l2": employee.emp_l2,
+            "emp_gender": employee.emp_gender,
+            "emp_address": employee.emp_address,
+            "emp_joining_date": employee.emp_joining_date,
+            "emp_email": employee.emp_email,
+            "emp_contact": employee.emp_contact,
+            "emp_marital_status": employee.emp_marital_status,
+            "emp_nationality": employee.emp_nationality,
+            "emp_pan_no": employee.emp_pan_no,
+            "emp_weekoff": employee.emp_weekoff
             # ...any other fields you want...
         }
     }

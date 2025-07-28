@@ -63,6 +63,8 @@ class LeaveRequest(Base):
     leave_req_status = Column(String(10))
     leave_req_l1_status = Column(String(10))
     leave_req_l2_status = Column(String(10))
+    leave_req_l1_id = Column(Integer)
+    leave_req_l2_id = Column(Integer)
 
 class AttendanceRequest(Base):
     __tablename__ = 'attendance_regularization_tbl'
@@ -78,7 +80,16 @@ class AttendanceRequest(Base):
 
 class ClockInClockOut(Base):
     __tablename__ = 'clockin_clockout_tbl'
+    cct_id = Column(Integer, primary_key=True, index=True)
     cct_emp_id = Column(Integer, ForeignKey('employee_tbl.emp_id'), primary_key=True)
     cct_date = Column(Date, primary_key=True)
     cct_clockin_time = Column(Time)
     cct_clockout_time = Column(Time)
+
+
+class LeaveType(Base):
+    __tablename__ = 'leave_type_tbl'
+    lt_id = Column(Integer, primary_key=True, autoincrement=True)
+    lt_abrev = Column(String(5))
+    lt_leave_type = Column(String(30))
+    lt_total = Column(Integer)
