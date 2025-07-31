@@ -4,7 +4,7 @@ from fastapi import Body, HTTPException, Query
 from fastapi import FastAPI, File, UploadFile, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
-from app.face_engine import FaceEngine
+#from app.face_engine import FaceEngine
 from app.storage import save_user, get_all_users, get_all_employees
 from app.utils import is_match
 from app.database import SessionLocal
@@ -30,105 +30,105 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-engine = FaceEngine()
+#engine = FaceEngine()
 
-@app.post("/register")
-async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
-    session: Session = SessionLocal()
-    # Check for duplicate name
-    existing_user = session.query(FaceUser).filter(FaceUser.name == name).first()
-    if existing_user:
-        session.close()
-        return {"status": "failed", "reason": f"User '{name}' already exists."}
+# @app.post("/register")
+# async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
+#     session: Session = SessionLocal()
+#     # Check for duplicate name
+#     existing_user = session.query(FaceUser).filter(FaceUser.name == name).first()
+#     if existing_user:
+#         session.close()
+#         return {"status": "failed", "reason": f"User '{name}' already exists."}
 
-    descriptors = []
+#     descriptors = []
 
-    for file in files:
-        content = await file.read()
-        desc = engine.extract_descriptor(content)
-        if desc is not None:
-            descriptors.append(desc.tolist())
+#     for file in files:
+#         content = await file.read()
+#         desc = engine.extract_descriptor(content)
+#         if desc is not None:
+#             descriptors.append(desc.tolist())
 
-    if not descriptors:
-        session.close()
-        return {"status": "failed", "reason": "No valid faces detected"}
+#     if not descriptors:
+#         session.close()
+#         return {"status": "failed", "reason": "No valid faces detected"}
 
-    for desc in descriptors:
-        session.add(FaceUser(name=name, embedding=desc))
+#     for desc in descriptors:
+#         session.add(FaceUser(name=name, embedding=desc))
 
-    session.commit()
-    session.close()
+#     session.commit()
+#     session.close()
 
-    return {"status": "success", "user": name, "registered_faces": len(descriptors)}
+#     return {"status": "success", "user": name, "registered_faces": len(descriptors)}
 
 # Verify and clockin endpoint
-@app.post("/verify")
-async def verify(
-    file: UploadFile = File(...),
-    face_user_emp_id: str = Form(...),
-):
-    content = await file.read()
-    live_descriptor = engine.extract_descriptor(content)
-    if live_descriptor is None:
-        return {"status": "failed", "reason": "No face detected"}
+# @app.post("/verify")
+# async def verify(
+#     file: UploadFile = File(...),
+#     face_user_emp_id: str = Form(...),
+# ):
+#     content = await file.read()
+#     live_descriptor = engine.extract_descriptor(content)
+#     if live_descriptor is None:
+#         return {"status": "failed", "reason": "No face detected"}
 
-    session: Session = SessionLocal()
-    users = session.query(FaceUser).filter(FaceUser.face_user_emp_id == face_user_emp_id).all()
-    if not users:
-        session.close()
-        return {"status": "failed", "reason": "User not found"}
+#     session: Session = SessionLocal()
+#     users = session.query(FaceUser).filter(FaceUser.face_user_emp_id == face_user_emp_id).all()
+#     if not users:
+#         session.close()
+#         return {"status": "failed", "reason": "User not found"}
 
-    best_match = None
-    lowest_distance = float("inf")
+#     best_match = None
+#     lowest_distance = float("inf")
 
-    for user in users:
-        db_desc = np.array(user.embedding)
-        distance = np.linalg.norm(live_descriptor - db_desc)
-        print(f"[LOG] Compared with {user.name} → Distance: {distance:.4f}")
+#     for user in users:
+#         db_desc = np.array(user.embedding)
+#         distance = np.linalg.norm(live_descriptor - db_desc)
+#         print(f"[LOG] Compared with {user.name} → Distance: {distance:.4f}")
 
-        if distance < 0.75:
-            # --- CLOCK IN LOGIC START ---
-            # Check if today's clock-in already exists
-            today = date.today()
-            clockin_exists = (
-                session.query(ClockInClockOut)
-                .filter(
-                    ClockInClockOut.cct_emp_id == int(face_user_emp_id),
-                    ClockInClockOut.cct_date == today,
-                    ClockInClockOut.cct_clockin_time != None  # has a value
-                )
-                .first()
-            )
-            if not clockin_exists:
-                now = datetime.now().time()
-                new_clockin = ClockInClockOut(
-                    cct_emp_id=int(face_user_emp_id),
-                    cct_date=today,
-                    cct_clockin_time=now,
-                    # You may set cct_clockout_time=None by default or leave it out if nullable
-                )
-                session.add(new_clockin)
-                session.commit()
-            # --- CLOCK IN LOGIC END ---
-            session.close()
-            return {
-                "status": "success",
-                "user": user.name,
-                "distance": round(distance, 4)
-            }
+#         if distance < 0.75:
+#             # --- CLOCK IN LOGIC START ---
+#             # Check if today's clock-in already exists
+#             today = date.today()
+#             clockin_exists = (
+#                 session.query(ClockInClockOut)
+#                 .filter(
+#                     ClockInClockOut.cct_emp_id == int(face_user_emp_id),
+#                     ClockInClockOut.cct_date == today,
+#                     ClockInClockOut.cct_clockin_time != None  # has a value
+#                 )
+#                 .first()
+#             )
+#             if not clockin_exists:
+#                 now = datetime.now().time()
+#                 new_clockin = ClockInClockOut(
+#                     cct_emp_id=int(face_user_emp_id),
+#                     cct_date=today,
+#                     cct_clockin_time=now,
+#                     # You may set cct_clockout_time=None by default or leave it out if nullable
+#                 )
+#                 session.add(new_clockin)
+#                 session.commit()
+#             # --- CLOCK IN LOGIC END ---
+#             session.close()
+#             return {
+#                 "status": "success",
+#                 "user": user.name,
+#                 "distance": round(distance, 4)
+#             }
 
-        if distance < lowest_distance:
-            lowest_distance = distance
-            best_match = user.name
+#         if distance < lowest_distance:
+#             lowest_distance = distance
+#             best_match = user.name
 
-    session.close()
+#     session.close()
 
-    return {
-        "status": "failed",
-        "reason": "Face does not match logged-in user",
-        "closest_match": best_match,
-        "closest_distance": round(lowest_distance, 4)
-    }
+#     return {
+#         "status": "failed",
+#         "reason": "Face does not match logged-in user",
+#         "closest_match": best_match,
+#         "closest_distance": round(lowest_distance, 4)
+#     }
 
 #clockout endpoint
 from fastapi import Request
