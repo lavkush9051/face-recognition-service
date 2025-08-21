@@ -4,7 +4,7 @@ from fastapi import Body, HTTPException, Query
 from fastapi import FastAPI, File, UploadFile, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
-#from app.face_engine import FaceEngine
+from app.face_engine import FaceEngine
 from app.storage import save_user, get_all_users, get_all_employees
 from app.utils import is_match
 from app.database import SessionLocal
@@ -30,105 +30,105 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-#engine = FaceEngine()
+engine = FaceEngine()
 
-# @app.post("/register")
-# async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
-#     session: Session = SessionLocal()
-#     # Check for duplicate name
-#     existing_user = session.query(FaceUser).filter(FaceUser.name == name).first()
-#     if existing_user:
-#         session.close()
-#         return {"status": "failed", "reason": f"User '{name}' already exists."}
+@app.post("/register")
+async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
+    session: Session = SessionLocal()
+    # Check for duplicate name
+    existing_user = session.query(FaceUser).filter(FaceUser.name == name).first()
+    if existing_user:
+        session.close()
+        return {"status": "failed", "reason": f"User '{name}' already exists."}
 
-#     descriptors = []
+    descriptors = []
 
-#     for file in files:
-#         content = await file.read()
-#         desc = engine.extract_descriptor(content)
-#         if desc is not None:
-#             descriptors.append(desc.tolist())
+    for file in files:
+        content = await file.read()
+        desc = engine.extract_descriptor(content)
+        if desc is not None:
+            descriptors.append(desc.tolist())
 
-#     if not descriptors:
-#         session.close()
-#         return {"status": "failed", "reason": "No valid faces detected"}
+    if not descriptors:
+        session.close()
+        return {"status": "failed", "reason": "No valid faces detected"}
 
-#     for desc in descriptors:
-#         session.add(FaceUser(name=name, embedding=desc))
+    for desc in descriptors:
+        session.add(FaceUser(name=name, embedding=desc))
 
-#     session.commit()
-#     session.close()
+    session.commit()
+    session.close()
 
-#     return {"status": "success", "user": name, "registered_faces": len(descriptors)}
+    return {"status": "success", "user": name, "registered_faces": len(descriptors)}
 
 # Verify and clockin endpoint
-# @app.post("/verify")
-# async def verify(
-#     file: UploadFile = File(...),
-#     face_user_emp_id: str = Form(...),
-# ):
-#     content = await file.read()
-#     live_descriptor = engine.extract_descriptor(content)
-#     if live_descriptor is None:
-#         return {"status": "failed", "reason": "No face detected"}
+@app.post("/api/clockin") # /verify
+async def verify(
+    file: UploadFile = File(...),
+    face_user_emp_id: str = Form(...),
+):
+    content = await file.read()
+    live_descriptor = engine.extract_descriptor(content)
+    if live_descriptor is None:
+        return {"status": "failed", "reason": "No face detected"}
 
-#     session: Session = SessionLocal()
-#     users = session.query(FaceUser).filter(FaceUser.face_user_emp_id == face_user_emp_id).all()
-#     if not users:
-#         session.close()
-#         return {"status": "failed", "reason": "User not found"}
+    session: Session = SessionLocal()
+    users = session.query(FaceUser).filter(FaceUser.face_user_emp_id == face_user_emp_id).all()
+    if not users:
+        session.close()
+        return {"status": "failed", "reason": "User not found"}
 
-#     best_match = None
-#     lowest_distance = float("inf")
+    best_match = None
+    lowest_distance = float("inf")
 
-#     for user in users:
-#         db_desc = np.array(user.embedding)
-#         distance = np.linalg.norm(live_descriptor - db_desc)
-#         print(f"[LOG] Compared with {user.name} → Distance: {distance:.4f}")
+    for user in users:
+        db_desc = np.array(user.embedding)
+        distance = np.linalg.norm(live_descriptor - db_desc)
+        print(f"[LOG] Compared with {user.name} → Distance: {distance:.4f}")
 
-#         if distance < 0.75:
-#             # --- CLOCK IN LOGIC START ---
-#             # Check if today's clock-in already exists
-#             today = date.today()
-#             clockin_exists = (
-#                 session.query(ClockInClockOut)
-#                 .filter(
-#                     ClockInClockOut.cct_emp_id == int(face_user_emp_id),
-#                     ClockInClockOut.cct_date == today,
-#                     ClockInClockOut.cct_clockin_time != None  # has a value
-#                 )
-#                 .first()
-#             )
-#             if not clockin_exists:
-#                 now = datetime.now().time()
-#                 new_clockin = ClockInClockOut(
-#                     cct_emp_id=int(face_user_emp_id),
-#                     cct_date=today,
-#                     cct_clockin_time=now,
-#                     # You may set cct_clockout_time=None by default or leave it out if nullable
-#                 )
-#                 session.add(new_clockin)
-#                 session.commit()
-#             # --- CLOCK IN LOGIC END ---
-#             session.close()
-#             return {
-#                 "status": "success",
-#                 "user": user.name,
-#                 "distance": round(distance, 4)
-#             }
+        if distance < 0.75:
+            # --- CLOCK IN LOGIC START ---
+            # Check if today's clock-in already exists
+            today = date.today()
+            clockin_exists = (
+                session.query(ClockInClockOut)
+                .filter(
+                    ClockInClockOut.cct_emp_id == int(face_user_emp_id),
+                    ClockInClockOut.cct_date == today,
+                    ClockInClockOut.cct_clockin_time != None  # has a value
+                )
+                .first()
+            )
+            if not clockin_exists:
+                now = datetime.now().time()
+                new_clockin = ClockInClockOut(
+                    cct_emp_id=int(face_user_emp_id),
+                    cct_date=today,
+                    cct_clockin_time=now,
+                    # You may set cct_clockout_time=None by default or leave it out if nullable
+                )
+                session.add(new_clockin)
+                session.commit()
+            # --- CLOCK IN LOGIC END ---
+            session.close()
+            return {
+                "status": "success",
+                "user": user.name,
+                "distance": round(distance, 4)
+            }
 
-#         if distance < lowest_distance:
-#             lowest_distance = distance
-#             best_match = user.name
+        if distance < lowest_distance:
+            lowest_distance = distance
+            best_match = user.name
 
-#     session.close()
+    session.close()
 
-#     return {
-#         "status": "failed",
-#         "reason": "Face does not match logged-in user",
-#         "closest_match": best_match,
-#         "closest_distance": round(lowest_distance, 4)
-#     }
+    return {
+        "status": "failed",
+        "reason": "Face does not match logged-in user",
+        "closest_match": best_match,
+        "closest_distance": round(lowest_distance, 4)
+    }
 
 #clockout endpoint
 from fastapi import Request
@@ -364,46 +364,187 @@ def get_all_attendance_requests():
         attendance_requests.append(ar_dict)
     return JSONResponse(content=attendance_requests)
 
+from fastapi import Query
+
+@app.get("/api/regularization-requests/{emp_id}")
+def get_attendance_regularization_requests(
+    emp_id: int,
+    admin: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    if not admin:
+        # Employee view: same as your original
+        requests = (
+            db.query(AttendanceRequest, Employee)
+            .join(Employee, AttendanceRequest.art_emp_id == Employee.emp_id)
+            .filter(AttendanceRequest.art_emp_id == emp_id)
+            .order_by(AttendanceRequest.art_date.desc())
+            .all()
+        )
+    else:
+        # ADMIN MODE: emp_id here is the admin's employee id
+        # L1: can see Pending + Approved where they're L1 approver
+        l1_reqs = (
+            db.query(AttendanceRequest, Employee)
+            .join(Employee, AttendanceRequest.art_emp_id == Employee.emp_id)
+            .filter(AttendanceRequest.art_l1_id == emp_id)
+            .filter(AttendanceRequest.art_l1_status.in_(["Approved", "Pending"]))
+            .order_by(AttendanceRequest.art_date.desc())
+            .all()
+        )
+
+        # L2: can see only those where L1 is Approved and they're L2 approver
+        l2_reqs = (
+            db.query(AttendanceRequest, Employee)
+            .join(Employee, AttendanceRequest.art_emp_id == Employee.emp_id)
+            .filter(AttendanceRequest.art_l2_id == emp_id)
+            .filter(AttendanceRequest.art_l1_status == "Approved")
+            .order_by(AttendanceRequest.art_date.desc())
+            .all()
+        )
+
+        # Deduplicate by request id while preserving latest-first order
+        dedup: dict[int, tuple[AttendanceRequest, Employee]] = {}
+        for ar, emp in l1_reqs + l2_reqs:
+            dedup[ar.art_id] = (ar, emp)
+
+        # Maintain date-desc order after dedupe
+        requests = sorted(dedup.values(), key=lambda x: x[0].art_date, reverse=True)
+
+    print(f"[DEBUG] Found {len(requests)} regularization requests for emp_id {emp_id} (admin={admin})")
+
+    result = []
+    for ar, emp in requests:
+        result.append({
+            "id": ar.art_id,
+            "emp_id": ar.art_emp_id,
+            "employee_name": emp.emp_name,
+            "emp_department": emp.emp_department,
+            "date": str(ar.art_date),
+            "clock_in": str(ar.art_clockin_time) if ar.art_clockin_time else "-",
+            "clock_out": str(ar.art_clockout_time) if ar.art_clockout_time else "-",
+            "reason": ar.art_reason,
+            "status": ar.art_status,
+            "l1_status": ar.art_l1_status,
+            "l2_status": ar.art_l2_status,
+        })
+
+    print(f"[DEBUG] Returning {len(result)} regularization requests")
+    return result
+
 
 # For Attendance Requests by Employee ID
 
+# @app.get("/api/leave-requests/{emp_id}")
+# def get_leave_requests(emp_id: int, db: Session = Depends(get_db)):
+#     requests = (
+#         db.query(LeaveRequest, Employee)
+#         .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
+#         .filter(LeaveRequest.leave_req_emp_id == emp_id)
+#         .order_by(LeaveRequest.leave_req_from_dt.desc())
+#         .all()
+#     )
+#     print(f"[DEBUG] Found {len(requests)} leave requests for emp_id {emp_id}")
+#     result = []
+#     for lr, emp in requests:
+#         result.append({
+#             # "leave_req_id": lr.leave_req_id,
+#             # "leave_req_emp_id": lr.leave_req_emp_id,
+#             # "emp_name": emp.emp_name,
+#             # "emp_department": emp.emp_department,
+#             # "leave_req_type": lr.leave_req_type,
+#             # "leave_req_from_dt": str(lr.leave_req_from_dt),
+#             # "leave_req_to_dt": str(lr.leave_req_to_dt),
+#             # "leave_req_reason": lr.leave_req_reason,
+#             # "leave_req_status": lr.leave_req_status,
+#             # "leave_req_l1_status": lr.leave_req_l1_status,
+#             # "leave_req_l2_status": lr.leave_req_l2_status,
+#             "id": lr.leave_req_id,
+#             "emp_id": lr.leave_req_emp_id,
+#             "employee_name": emp.emp_name,
+#             "emp_department": emp.emp_department,
+#             "leave_type_name": lr.leave_req_type,
+#             "start_date": str(lr.leave_req_from_dt),
+#             "end_date": str(lr.leave_req_to_dt),
+#             "reason": lr.leave_req_reason,
+#             "status": lr.leave_req_status,
+#             "l1_status": lr.leave_req_l1_status,
+#             "l2_status": lr.leave_req_l2_status,
+#         })
+#     return result
+
+# New way to get leave requests
+
 @app.get("/api/leave-requests/{emp_id}")
-def get_leave_requests(emp_id: int, db: Session = Depends(get_db)):
-    requests = (
-        db.query(LeaveRequest, Employee)
-        .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
-        .filter(LeaveRequest.leave_req_emp_id == emp_id)
-        .order_by(LeaveRequest.leave_req_from_dt.desc())
-        .all()
-    )
-    print(f"[DEBUG] Found {len(requests)} leave requests for emp_id {emp_id}")
+def get_leave_requests(
+    emp_id: int,
+    admin: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    # If not admin, return as before
+    if not admin:
+        requests = (
+            db.query(LeaveRequest, Employee)
+            .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
+            .filter(LeaveRequest.leave_req_emp_id == emp_id)
+            .order_by(LeaveRequest.leave_req_from_dt.desc())
+            .all()
+        )
+    else:
+        # ADMIN MODE: emp_id here is the admin's ID!
+        # Find all leave requests where this admin is l1 or l2
+        l1_reqs = (
+            db.query(LeaveRequest, Employee)
+            .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
+            .filter(LeaveRequest.leave_req_l1_id == emp_id)
+            .filter(LeaveRequest.leave_req_l1_status.in_(["Approved", "Pending"]))
+            .order_by(LeaveRequest.leave_req_from_dt.desc())
+            .all()
+        )
+        l2_reqs = (
+            db.query(LeaveRequest, Employee)
+            .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
+            .filter(LeaveRequest.leave_req_l2_id == emp_id)
+            .filter(LeaveRequest.leave_req_l1_status == "Approved")  # Only if L1 approved
+            .order_by(LeaveRequest.leave_req_from_dt.desc())
+            .all()
+        )
+        # Combine L1 and L2 requests, and remove duplicates (if any)
+        requests = list({(lr.leave_req_id, lr, emp) for lr, emp in l1_reqs + l2_reqs})
+        # Now unpack tuples
+        requests = [(lr, emp) for _, lr, emp in requests]
+
+    print(f"[DEBUG] Found {len(requests)} leave requests for emp_id {emp_id} (admin={admin})")
     result = []
     for lr, emp in requests:
         result.append({
-            "leave_req_id": lr.leave_req_id,
-            "leave_req_emp_id": lr.leave_req_emp_id,
-            "emp_name": emp.emp_name,
+            "id": lr.leave_req_id,
+            "emp_id": lr.leave_req_emp_id,
+            "employee_name": emp.emp_name,
             "emp_department": emp.emp_department,
-            "leave_req_type": lr.leave_req_type,
-            "leave_req_from_dt": str(lr.leave_req_from_dt),
-            "leave_req_to_dt": str(lr.leave_req_to_dt),
-            "leave_req_reason": lr.leave_req_reason,
-            "leave_req_status": lr.leave_req_status,
-            "leave_req_l1_status": lr.leave_req_l1_status,
-            "leave_req_l2_status": lr.leave_req_l2_status,
+            "leave_type_name": lr.leave_req_type,
+            "start_date": str(lr.leave_req_from_dt),
+            "end_date": str(lr.leave_req_to_dt),
+            "reason": lr.leave_req_reason,
+            "status": lr.leave_req_status,
+            "l1_status": lr.leave_req_l1_status,
+            "l2_status": lr.leave_req_l2_status,
         })
+    print(f"[DEBUG] Returning {len(result)} leave requests")
     return result
 
 
 # For Leave Request Creation
 @app.post("/api/leave-request")
 async def create_leave_request(
+    
     emp_id: int = Form(...),
     leave_type: str = Form(...),
     leave_from_dt: str = Form(...),
     leave_to_dt: str = Form(...),
     leave_reason: str = Form(...),
 ):
+    print(f"[DEBUG] Creating leave request for emp_id {emp_id} from {leave_from_dt} to {leave_to_dt}")
     session: Session = SessionLocal()
     try:
         # Lookup L1 and L2 for this employee
@@ -458,11 +599,11 @@ def delete_leave_request(leave_req_id: int):
 
 @app.post("/api/attendance-regularization")
 def create_attendance_request(
-    emp_id: int = Body(...),
-    date: str = Body(...),          # 'YYYY-MM-DD'
-    clock_in: str = Body(...),      # 'HH:MM' (24-hour)
-    clock_out: str = Body(...),     # 'HH:MM'
-    reason: str = Body(...),
+    emp_id: int = Form(...),
+    date: str = Form(...),          # 'YYYY-MM-DD'
+    clock_in: str = Form(...),      # 'HH:MM' (24-hour)
+    clock_out: str = Form(...),     # 'HH:MM'
+    reason: str = Form(...),
 ):
     session: Session = SessionLocal()
     try:
@@ -492,59 +633,137 @@ def create_attendance_request(
 
 # For Attendance Request L1 Action
 
-@app.put("/api/attendance-request/l1-action")
-async def l1_attendance_action(
-    art_id: int = Body(...),
-    action: str = Body(...)
-):
-    session = SessionLocal()
-    try:
-        req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
-        if not req:
-            session.close()
-            return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
-        if action == "approve":
-            req.art_l1_status = "Approved"
-            req.art_status = "L1 Approved"
-        elif action == "reject":
-            req.art_l1_status = "Rejected"
-            req.art_status = "Rejected"
-        else:
-            session.close()
-            return JSONResponse(status_code=400, content={"error": "Invalid action"})
-        session.commit()
-        session.close()
-        return {"status": "success"}
-    except Exception as e:
-        session.rollback()
-        session.close()
-        return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
+# @app.put("/api/attendance-request/l1-action")
+# async def l1_attendance_action(
+#     art_id: int = Body(...),
+#     action: str = Body(...)
+# ):
+#     session = SessionLocal()
+#     try:
+#         req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
+#         if not req:
+#             session.close()
+#             return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
+#         if action == "approve":
+#             req.art_l1_status = "Approved"
+#             req.art_status = "L1 Approved"
+#         elif action == "reject":
+#             req.art_l1_status = "Rejected"
+#             req.art_status = "Rejected"
+#         else:
+#             session.close()
+#             return JSONResponse(status_code=400, content={"error": "Invalid action"})
+#         session.commit()
+#         session.close()
+#         return {"status": "success"}
+#     except Exception as e:
+#         session.rollback()
+#         session.close()
+#         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
     
-# For Attendance Request L2 Action
+# # For Attendance Request L2 Action
 
-@app.put("/api/attendance-request/l2-action")
-async def l2_attendance_action(
-    art_id: int = Body(...),
-    action: str = Body(...)
+# @app.put("/api/attendance-request/l2-action")
+# async def l2_attendance_action(
+#     art_id: int = Body(...),
+#     action: str = Body(...)
+# ):
+#     session = SessionLocal()
+#     try:
+#         req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
+#         if not req:
+#             session.close()
+#             return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
+#         if action == "approve":
+#             req.art_l2_status = "Approved"
+#             req.art_status = "Approved"
+#         elif action == "reject":
+#             req.art_l2_status = "Rejected"
+#             req.art_status = "Rejected"
+#         else:
+#             session.close()
+#             return JSONResponse(status_code=400, content={"error": "Invalid action"})
+#         session.commit()
+#         session.close()
+#         return {"status": "success"}
+#     except Exception as e:
+#         session.rollback()
+#         session.close()
+#         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
+# NEW: Combined L1/L2 action for Attendance Requests
+@app.put("/api/attendance-request/action")
+async def attendance_action(
+    attendance_request_id: int = Body(...),
+    action: str = Body(...),          # "approve" or "reject"
+    admin_id: int = Body(...),
 ):
-    session = SessionLocal()
+    """
+    Acts on an attendance regularization request at either L1 or L2 level, based on the caller (admin_id).
+    Rules:
+      - If admin is L1 (req.art_l1_id == admin_id): can approve/reject anytime.
+      - If admin is L2 (req.art_l2_id == admin_id): can act ONLY AFTER L1 is Approved.
+      - Status mapping:
+          approve:
+            L1 -> art_l1_status="Approved", art_status="L1 Approved"
+            L2 -> art_l2_status="Approved", art_status="Approved"
+          reject:
+            L1 -> art_l1_status="Rejected", art_status="Rejected"
+            L2 -> art_l2_status="Rejected", art_status="Rejected"
+    Returns: {"status": "success"} on success, or JSON error with status code.
+    """
+    session: Session = SessionLocal()
     try:
-        req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
+        req = (
+            session.query(AttendanceRequest)
+            .filter(AttendanceRequest.art_id == attendance_request_id)
+            .first()
+        )
         if not req:
             session.close()
             return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
-        if action == "approve":
-            req.art_l2_status = "Approved"
-            req.art_status = "Approved"
-        elif action == "reject":
-            req.art_l2_status = "Rejected"
-            req.art_status = "Rejected"
-        else:
+
+        action = action.lower().strip()
+        if action not in ("approve", "reject"):
             session.close()
             return JSONResponse(status_code=400, content={"error": "Invalid action"})
+
+        # Determine actor level and apply rules
+        if getattr(req, "art_l1_id", None) == admin_id:
+            # L1 action
+            if action == "approve":
+                req.art_l1_status = "Approved"
+                req.art_status = "L1 Approved"
+            else:  # reject
+                req.art_l1_status = "Rejected"
+                req.art_status = "Rejected"
+
+        elif getattr(req, "art_l2_id", None) == admin_id:
+            # L2 action requires L1 Approved first
+            if req.art_l1_status != "Approved":
+                session.close()
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "L1 must approve before L2 can act"}
+                )
+
+            if action == "approve":
+                req.art_l2_status = "Approved"
+                req.art_status = "Approved"
+            else:  # reject
+                req.art_l2_status = "Rejected"
+                req.art_status = "Rejected"
+
+        else:
+            session.close()
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You are not authorized to act on this request"}
+            )
+
         session.commit()
         session.close()
         return {"status": "success"}
+
     except Exception as e:
         session.rollback()
         session.close()
@@ -678,3 +897,43 @@ def get_leave_types(db: Session = Depends(get_db)):
         for l in leave_types
     ]
     return {"leave_types": result}      
+
+# Add this to app/main.py or a routes file
+from fastapi import APIRouter, Query, Response
+
+import pandas as pd
+import io
+
+router = APIRouter()
+
+@app.get("/reports/attendance", response_class=Response)
+def download_report(
+    emp_id: int = Query(None),
+    month: int = Query(...),
+    year: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    # Build query
+    query = db.query(ClockInClockOut)
+    if emp_id:
+        query = query.filter(ClockInClockOut.cct_emp_id == emp_id)
+    query = query.filter(
+        ClockInClockOut.cct_date >= f"{year}-{month:02d}-01",
+        ClockInClockOut.cct_date < f"{year}-{month+1:02d}-01" if month < 12 else f"{year+1}-01-01"
+    )
+    rows = query.all()
+    # Convert to DataFrame
+    df = pd.DataFrame([{
+        "Date": row.cct_date,
+        "Clock In": row.cct_clockin_time,
+        "Clock Out": row.cct_clockout_time,
+        "Emp ID": row.cct_emp_id
+    } for row in rows])
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False)
+    output.seek(0)
+    headers = {
+        'Content-Disposition': f'attachment; filename=attendance_{emp_id or "all"}_{year}_{month:02d}.xlsx'
+    }
+    return Response(content=output.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)

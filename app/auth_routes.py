@@ -36,6 +36,7 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(user: UserLogin, db: Session = Depends(get_db)):
+    print("Login attempt for user:", user.username, "with password,", user.password)
     db_user = db.query(AppUser).filter(AppUser.username == user.username).first()
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -50,7 +51,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {
         "access_token": token,
         "token_type": "bearer",
-        "employee": {
+        "user": {
             "emp_id": employee.emp_id,
             "emp_name": employee.emp_name,
             "emp_department": employee.emp_department,

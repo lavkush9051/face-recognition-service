@@ -75,6 +75,8 @@ class AttendanceRequest(Base):
     art_clockout_time = Column(Time)
     art_reason = Column(String(100))
     art_status = Column(String(20))
+    art_l1_id = Column(Integer)
+    art_l2_id = Column(Integer)
     art_l1_status = Column(String(20))
     art_l2_status = Column(String(20))
 
