@@ -8,7 +8,7 @@ from app.face_engine import FaceEngine
 from app.storage import save_user, get_all_users, get_all_employees
 from app.utils import is_match
 from app.database import SessionLocal
-from app.models import ClockInClockOut, FaceUser, Base, Employee, LeaveRequest, AttendanceRequest, LeaveType
+from app.models import ClockInClockOut, FaceUser, Base, Employee, LeaveBalance, LeaveRequest, AttendanceRequest, LeaveType
 from sqlalchemy.orm import Session
 from app.auth_routes import router as auth_router
 from fastapi.encoders import jsonable_encoder
@@ -22,7 +22,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can restrict this to ["http://localhost:5173"]
+    allow_origins= ["*"],#["https://attendease-app.vercel.app/", "https://attendease-8hr581l66-lavkushandsingh-4726s-projects.vercel.app/","14.143.212.6:0","http://localhost:3000"],  # You can restrict this to ["http://localhost:5173"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,34 +32,70 @@ app.include_router(auth_router)
 
 engine = FaceEngine()
 
-@app.post("/register")
-async def register(name: str = Form(...), files: List[UploadFile] = File(...)):
+# @app.middleware("http")
+# async def log_requests(request: Request, call_next):
+#     print(f"[REQ] {request.method} {request.url}")
+#     response = await call_next(request)
+#     print(f"[RES] {response.status_code} {request.method} {request.url}")
+#     return response
+
+
+# Initialize DB tables
+
+@app.post("/api/register")
+async def register_faces(
+    emp_id: int = Form(...),
+    name: str = Form(...),
+    files: List[UploadFile] = File(...)
+):
     session: Session = SessionLocal()
-    # Check for duplicate name
-    existing_user = session.query(FaceUser).filter(FaceUser.name == name).first()
-    if existing_user:
+    try:
+        # 1) must be exactly 4 files
+        if not files or len(files) != 4:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "failed", "reason": "Exactly 4 images are required."}
+            )
+
+        # 2) allow register only if this emp has no face rows yet
+        already = session.query(FaceUser).filter(FaceUser.face_user_emp_id == emp_id).first()
+        if already:
+            return JSONResponse(
+                status_code=409,
+                content={"status": "failed", "reason": "Faces already registered for this employee."}
+            )
+
+        descriptors = []
+        for file in files:
+            content = await file.read()
+            desc = engine.extract_descriptor(content)  # returns np.ndarray or None
+            if desc is not None:
+                # store as plain Python list (for ARRAY(Float))
+                descriptors.append(desc.tolist())
+
+        # need all 4 to be valid
+        if len(descriptors) < 4:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "failed", "reason": f"Detected only {len(descriptors)} valid face(s). Please upload 4 clear face images."}
+            )
+
+        # 3) insert 4 rows for the same emp (one per embedding)
+        for desc in descriptors:
+            session.add(FaceUser(
+                name=name,
+                face_user_emp_id=emp_id,
+                embedding=desc
+            ))
+
+        session.commit()
+        return {"status": "success", "user": name, "emp_id": emp_id, "registered_faces": len(descriptors)}
+    except Exception as e:
+        session.rollback()
+        return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
+    finally:
         session.close()
-        return {"status": "failed", "reason": f"User '{name}' already exists."}
 
-    descriptors = []
-
-    for file in files:
-        content = await file.read()
-        desc = engine.extract_descriptor(content)
-        if desc is not None:
-            descriptors.append(desc.tolist())
-
-    if not descriptors:
-        session.close()
-        return {"status": "failed", "reason": "No valid faces detected"}
-
-    for desc in descriptors:
-        session.add(FaceUser(name=name, embedding=desc))
-
-    session.commit()
-    session.close()
-
-    return {"status": "success", "user": name, "registered_faces": len(descriptors)}
 
 # Verify and clockin endpoint
 @app.post("/api/clockin") # /verify
@@ -607,9 +643,16 @@ def create_attendance_request(
 ):
     session: Session = SessionLocal()
     try:
+        # Lookup L1 and L2 for this employee
+        emp = session.query(Employee).filter(Employee.emp_id == emp_id).first()
+        if not emp:
+            session.close()
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
         att_date = datetime.strptime(date, "%Y-%m-%d").date()
         clock_in_time = datetime.strptime(clock_in, "%H:%M").time()
         clock_out_time = datetime.strptime(clock_out, "%H:%M").time()
+
         attendance = AttendanceRequest(
             art_emp_id=emp_id,
             art_date=att_date,
@@ -619,6 +662,8 @@ def create_attendance_request(
             art_status="Pending",
             art_l1_status="Pending",
             art_l2_status="Pending",
+            art_l1_id=emp.emp_l1,   # <-- Added!
+            art_l2_id=emp.emp_l2,   # <-- Added!
         )
         session.add(attendance)
         session.commit()
@@ -749,6 +794,29 @@ async def attendance_action(
             if action == "approve":
                 req.art_l2_status = "Approved"
                 req.art_status = "Approved"
+                clockin_exists = (
+                    session.query(ClockInClockOut) 
+                    .filter(
+                        ClockInClockOut.cct_emp_id == req.art_emp_id,
+                        ClockInClockOut.cct_date == req.art_date,
+                        #ClockInClockOut.cct_clockin_time != None  # has a value
+                    ).first()
+                )
+                if not clockin_exists:
+                    new_clockin = ClockInClockOut(
+                        cct_emp_id=req.art_emp_id,
+                        cct_date=req.art_date,
+                        cct_clockin_time=req.art_clockin_time,
+                        cct_clockout_time=req.art_clockout_time
+                    )
+                    session.add(new_clockin)
+                    session.commit()
+                else:
+                    # Update existing record with new times
+                    clockin_exists.cct_clockin_time = req.art_clockin_time
+                    clockin_exists.cct_clockout_time = req.art_clockout_time
+                    session.commit()    
+
             else:  # reject
                 req.art_l2_status = "Rejected"
                 req.art_status = "Rejected"
@@ -801,7 +869,7 @@ def get_reporting_levels(emp_id: int = Query(...), l1_id: int = Query(...), l2_i
     finally:
         session.close()
 
-
+# gert attendance summary by user id
 @app.get("/api/attendance")
 def get_attendance(
     emp_id: int = Query(...),
@@ -937,3 +1005,43 @@ def download_report(
         'Content-Disposition': f'attachment; filename=attendance_{emp_id or "all"}_{year}_{month:02d}.xlsx'
     }
     return Response(content=output.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
+
+@app.get("/api/leave-balance")
+def get_leave_balance(emp_id: int = Query(...)):
+    session: Session = SessionLocal()
+    try:
+        lb = (
+            session.query(LeaveBalance)
+            .filter(LeaveBalance.lt_emp_id == emp_id)
+            .first()
+        )
+
+        if not lb:
+            session.close()
+            return JSONResponse(
+                status_code=404,
+                content={"status": "failed", "error": "Leave balance not found for this employee"},
+            )
+
+        data = {
+            "emp_id": lb.lt_emp_id,
+            "casual_leave": lb.lt_casual_leave,
+            "earned_leave": lb.lt_earned_leave,
+            "half_pay_leave": lb.lt_half_pay_leave,
+            "medical_leave": lb.lt_medical_leave,
+            "special_leave": lb.lt_special_leave,
+            "child_care_leave": lb.lt_child_care_leave,
+            "parental_leave": lb.lt_parental_leave,
+        }
+
+        session.close()
+        return {"status": "success", "data": data}
+
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "failed", "error": str(e)},
+        )

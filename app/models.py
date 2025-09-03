@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, Date, ForeignKey, Time
+from sqlalchemy import Column, Integer, String, DateTime, Float, Date, ForeignKey, Time, BigInteger, CheckConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base
@@ -9,11 +9,13 @@ Base = declarative_base()
 class FaceUser(Base):
     __tablename__ = 'face_users'
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, nullable=False)
     embedding = Column(ARRAY(Float), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     face_user_emp_id = Column(Integer, ForeignKey('employee_tbl.emp_id'), primary_key=True)
+#    face_user_emp_id = Column(Integer, ForeignKey('employee_tbl.emp_id'), index=True, nullable=False)
+
 
 # Only for initialization
 if __name__ == "__main__":
@@ -95,3 +97,35 @@ class LeaveType(Base):
     lt_abrev = Column(String(5))
     lt_leave_type = Column(String(30))
     lt_total = Column(Integer)
+
+class LeaveBalance(Base):
+    __tablename__ = "leave_tbl"
+
+    lt_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    lt_emp_id = Column(
+        Integer,
+        ForeignKey("employee_tbl.emp_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # one row per employee
+    )
+
+    lt_casual_leave     = Column(Integer, nullable=False, server_default="0")
+    lt_earned_leave     = Column(Integer, nullable=False, server_default="0")
+    lt_half_pay_leave   = Column(Integer, nullable=False, server_default="0")
+    lt_medical_leave    = Column(Integer, nullable=False, server_default="0")
+    lt_special_leave    = Column(Integer, nullable=False, server_default="0")
+    lt_child_care_leave = Column(Integer, nullable=False, server_default="0")
+    lt_parental_leave   = Column(Integer, nullable=False, server_default="0")
+
+    __table_args__ = (
+        CheckConstraint("lt_casual_leave >= 0"),
+        CheckConstraint("lt_earned_leave >= 0"),
+        CheckConstraint("lt_half_pay_leave >= 0"),
+        CheckConstraint("lt_medical_leave >= 0"),
+        CheckConstraint("lt_special_leave >= 0"),
+        CheckConstraint("lt_child_care_leave >= 0"),
+        CheckConstraint("lt_parental_leave >= 0"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<LeaveBalance emp_id={self.lt_emp_id}>"
