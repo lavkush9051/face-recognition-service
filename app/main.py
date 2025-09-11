@@ -1,20 +1,25 @@
 # app/main.py
 import calendar
+from operator import and_
 from fastapi import Body, HTTPException, Query
-from fastapi import FastAPI, File, UploadFile, Form, Depends
+from fastapi import FastAPI, File, UploadFile, Form, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from app.face_engine import FaceEngine
 from app.storage import save_user, get_all_users, get_all_employees
 from app.utils import is_match
 from app.database import SessionLocal
-from app.models import ClockInClockOut, FaceUser, Base, Employee, LeaveBalance, LeaveRequest, AttendanceRequest, LeaveType
+from app.models import ClockInClockOut, EmpShift, FaceUser, Base, Employee, LeaveBalance, LeaveRequest, AttendanceRequest, LeaveType, EmpShift
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.auth_routes import router as auth_router
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from .database import get_db
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+IST = ZoneInfo("Asia/Kolkata")
+
 
 import numpy as np
 
@@ -27,6 +32,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+CLOCKIN_THRESHOLD = 0.75 
 
 app.include_router(auth_router)
 
@@ -102,6 +109,7 @@ async def register_faces(
 async def verify(
     file: UploadFile = File(...),
     face_user_emp_id: str = Form(...),
+    shift : str = Form(...),
 ):
     content = await file.read()
     live_descriptor = engine.extract_descriptor(content)
@@ -109,6 +117,10 @@ async def verify(
         return {"status": "failed", "reason": "No face detected"}
 
     session: Session = SessionLocal()
+    now_ist = datetime.now(IST)
+    today_ist = now_ist.date()
+    time_ist = now_ist.time().replace(microsecond=0)
+
     users = session.query(FaceUser).filter(FaceUser.face_user_emp_id == face_user_emp_id).all()
     if not users:
         session.close()
@@ -116,6 +128,15 @@ async def verify(
 
     best_match = None
     lowest_distance = float("inf")
+
+    #check user's shift for clockin
+    emp_shift = session.query(EmpShift).filter(EmpShift.est_shift_abbrv == shift).first()
+    if not emp_shift:
+        return {"status": "failed", "reason": "Shift not found"}
+
+    now_ist = datetime.now(IST)
+    if not within_clockin_window(now_ist, emp_shift.est_shift_start_time, minutes=15):
+        return {"status": "failed", "reason": "Clock-in not allowed outside ±15 min window"}
 
     for user in users:
         db_desc = np.array(user.embedding)
@@ -125,22 +146,25 @@ async def verify(
         if distance < 0.75:
             # --- CLOCK IN LOGIC START ---
             # Check if today's clock-in already exists
-            today = date.today()
+            # today = date.today()
+            
             clockin_exists = (
                 session.query(ClockInClockOut)
                 .filter(
                     ClockInClockOut.cct_emp_id == int(face_user_emp_id),
-                    ClockInClockOut.cct_date == today,
+                    ClockInClockOut.cct_date == today_ist,
                     ClockInClockOut.cct_clockin_time != None  # has a value
                 )
                 .first()
             )
             if not clockin_exists:
-                now = datetime.now().time()
+                
+                # now = datetime.now().time()
                 new_clockin = ClockInClockOut(
                     cct_emp_id=int(face_user_emp_id),
-                    cct_date=today,
-                    cct_clockin_time=now,
+                    cct_date=today_ist,
+                    cct_clockin_time=time_ist,
+                    cct_shift_abbrv = shift,
                     # You may set cct_clockout_time=None by default or leave it out if nullable
                 )
                 session.add(new_clockin)
@@ -166,6 +190,24 @@ async def verify(
         "closest_distance": round(lowest_distance, 4)
     }
 
+def within_clockin_window(now_ist: datetime, shift_start_time, minutes: int = 15) -> bool:
+    """
+    True if now_ist is within [shift_start - minutes, shift_start + minutes].
+    Handles windows that cross midnight (e.g., 00:05 start).
+    """
+    # anchor shift start to *today* in IST
+    start_today = datetime.combine(now_ist.date(), shift_start_time).replace(tzinfo=IST)
+    window = timedelta(minutes=minutes)
+    ws_today = start_today - window
+    we_today = start_today + window
+
+    # also consider the window for *tomorrow* (covers early clock-in before midnight for a 00:xx shift)
+    start_tom = start_today + timedelta(days=1)
+    ws_tom = start_tom - window
+    we_tom = start_tom + window
+
+    return (ws_today <= now_ist <= we_today) or (ws_tom <= now_ist <= we_tom)
+
 #clockout endpoint
 from fastapi import Request
 @app.put("/api/clockout")
@@ -174,15 +216,20 @@ async def clock_out(request: Request):
     print("Raw body:", data)
     emp_id = data.get("emp_id")
     session: Session = SessionLocal()
-    today = date.today()
-    now = datetime.now().time()
+    #today = date.today()
+    #now = datetime.now().time()
+    IST = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(IST)
+    today_ist = now_ist.date()
+    time_ist = now_ist.time().replace(microsecond=0)
+    
     try:
         # Find today's clock-in
         record = (
             session.query(ClockInClockOut)
             .filter(
                 ClockInClockOut.cct_emp_id == emp_id,
-                ClockInClockOut.cct_date == today
+                ClockInClockOut.cct_date == today_ist
             )
             .first()
         )
@@ -190,10 +237,10 @@ async def clock_out(request: Request):
             session.close()
             return {"status": "failed", "error": "No clock-in found for today"}
         # Update clockout time every time
-        record.cct_clockout_time = now
+        record.cct_clockout_time = time_ist
         session.commit()
         session.close()
-        return {"status": "success", "clockout_time": str(now)}
+        return {"status": "success", "clockout_time": str(time_ist)}
     except Exception as e:
         session.rollback()
         session.close()
@@ -276,12 +323,11 @@ def get_all_leave_requests(admin_id: int = Query(...)):
         leave_requests.append(lr_dict)
     return JSONResponse(content=leave_requests)
 
-# For Leave Request L1 Action
-
-# @app.put("/api/leave-request/l1-action")
-# async def l1_leave_action(
+# @app.put("/api/leave-request/action")
+# async def leave_action(
 #     leave_req_id: int = Body(...),
-#     action: str = Body(...)  # "approve" or "reject"
+#     action: str = Body(...),            # "approve" or "reject"
+#     admin_id: int = Body(...)
 # ):
 #     session: Session = SessionLocal()
 #     try:
@@ -289,52 +335,48 @@ def get_all_leave_requests(admin_id: int = Query(...)):
 #         if not req:
 #             session.close()
 #             return JSONResponse(status_code=404, content={"error": "Leave request not found"})
-#         if action == "approve":
-#             req.leave_req_l1_status = "Approved"
-#             req.leave_req_status = "L1 Approved"
-#         elif action == "reject":
-#             req.leave_req_l1_status = "Rejected"
-#             req.leave_req_status = "Rejected"
-#         session.commit()
-#         session.close()
-#         return {"status": "success"}
-#     except Exception as e:
-#         session.rollback()
-#         session.close()
-#         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
 
-# # For L2 Leave Requests
-
-# @app.put("/api/leave-request/l2-action")
-# async def l2_leave_action(
-#     leave_req_id: int = Body(...),
-#     action: str = Body(...)  # "approve" or "reject"
-# ):
-#     session: Session = SessionLocal()
-#     try:
-#         req = session.query(LeaveRequest).filter(LeaveRequest.leave_req_id == leave_req_id).first()
-#         if not req:
+#         # Check if admin is L1 or L2
+#         if req.leave_req_l1_id == admin_id:
+#             # L1 manager action
+#             if action == "approve":
+#                 req.leave_req_l1_status = "Approved"
+#                 req.leave_req_status = "L1 Approved"
+#             elif action == "reject":
+#                 req.leave_req_l1_status = "Rejected"
+#                 req.leave_req_status = "Rejected"
+#         elif req.leave_req_l2_id == admin_id:
+#             # Only L2 can approve after L1 approved
+#             if req.leave_req_l1_status != "Approved":
+#                 session.close()
+#                 return JSONResponse(status_code=403, content={"error": "L1 must approve before L2 can act"})
+#             if action == "approve":
+#                 req.leave_req_l2_status = "Approved"
+#                 req.leave_req_status = "Approved"
+#             elif action == "reject":
+#                 req.leave_req_l2_status = "Rejected"
+#                 req.leave_req_status = "Rejected"
+#         else:
 #             session.close()
-#             return JSONResponse(status_code=404, content={"error": "Leave request not found"})
-#         if action == "approve":
-#             req.leave_req_l2_status = "Approved"
-#             req.leave_req_status = "Approved"
-#         elif action == "reject":
-#             req.leave_req_l2_status = "Rejected"
-#             req.leave_req_status = "Rejected"
+#             return JSONResponse(status_code=403, content={"error": "You are not authorized to act on this request"})
+
 #         session.commit()
 #         session.close()
 #         return {"status": "success"}
+
 #     except Exception as e:
 #         session.rollback()
 #         session.close()
 #         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
 
+
+#new method with ledger ops
 @app.put("/api/leave-request/action")
 async def leave_action(
     leave_req_id: int = Body(...),
-    action: str = Body(...),            # "approve" or "reject"
-    admin_id: int = Body(...)
+    action: str = Body(...),      # "approve" or "reject"
+    admin_id: int = Body(...),
+    remarks: str = Body(...)  # New remarks field
 ):
     session: Session = SessionLocal()
     try:
@@ -343,42 +385,70 @@ async def leave_action(
             session.close()
             return JSONResponse(status_code=404, content={"error": "Leave request not found"})
 
-        # Check if admin is L1 or L2
-        if req.leave_req_l1_id == admin_id:
-            # L1 manager action
+        # Compute qty for ledger ops
+        qty = business_days_inclusive(req.leave_req_from_dt, req.leave_req_to_dt)
+        emp_id = req.leave_req_emp_id
+        ltype = req.leave_req_type
+
+        action = action.lower().strip()
+        if action not in ("approve", "reject"):
+            session.close()
+            return JSONResponse(status_code=400, content={"error": "Invalid action"})
+
+        # L1 action
+        if getattr(req, "leave_req_l1_id", None) == admin_id:
             if action == "approve":
                 req.leave_req_l1_status = "Approved"
                 req.leave_req_status = "L1 Approved"
-            elif action == "reject":
+                # HOLD remains in place (no ledger change)
+            else:
+                # reject: RELEASE hold
                 req.leave_req_l1_status = "Rejected"
                 req.leave_req_status = "Rejected"
-        elif req.leave_req_l2_id == admin_id:
-            # Only L2 can approve after L1 approved
+                ledger_release(session, emp_id, ltype, qty, req.leave_req_id)
+            # Add remarks if provided
+            if remarks:
+                req.remarks = (req.remarks or "") + f"\nL1 ({admin_id}): {remarks}"
+    
+
+        # L2 action
+        elif getattr(req, "leave_req_l2_id", None) == admin_id:
             if req.leave_req_l1_status != "Approved":
                 session.close()
                 return JSONResponse(status_code=403, content={"error": "L1 must approve before L2 can act"})
+
             if action == "approve":
                 req.leave_req_l2_status = "Approved"
                 req.leave_req_status = "Approved"
-            elif action == "reject":
+                # Finalize: RELEASE HOLD and COMMIT
+                ledger_release(session, emp_id, ltype, qty, req.leave_req_id)
+                ledger_commit(session, emp_id, ltype, qty, req.leave_req_id)
+            else:
                 req.leave_req_l2_status = "Rejected"
                 req.leave_req_status = "Rejected"
+                # Rejection at L2 → RELEASE hold
+                ledger_release(session, emp_id, ltype, qty, req.leave_req_id)
+            
+            # Add remarks if provided
+            if remarks:
+                req.remarks = (req.remarks or "") + f"\nL2 ({admin_id}): {remarks}"
+
+
         else:
             session.close()
             return JSONResponse(status_code=403, content={"error": "You are not authorized to act on this request"})
 
         session.commit()
-        session.close()
         return {"status": "success"}
 
     except Exception as e:
         session.rollback()
-        session.close()
         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
+    finally:
+        session.close()
 
-    
-# For Attendance Requests
-    
+
+# For Attendance Requests 
 @app.get("/api/attendance-requests")
 def get_all_attendance_requests():
     session = SessionLocal()
@@ -469,48 +539,6 @@ def get_attendance_regularization_requests(
     return result
 
 
-# For Attendance Requests by Employee ID
-
-# @app.get("/api/leave-requests/{emp_id}")
-# def get_leave_requests(emp_id: int, db: Session = Depends(get_db)):
-#     requests = (
-#         db.query(LeaveRequest, Employee)
-#         .join(Employee, LeaveRequest.leave_req_emp_id == Employee.emp_id)
-#         .filter(LeaveRequest.leave_req_emp_id == emp_id)
-#         .order_by(LeaveRequest.leave_req_from_dt.desc())
-#         .all()
-#     )
-#     print(f"[DEBUG] Found {len(requests)} leave requests for emp_id {emp_id}")
-#     result = []
-#     for lr, emp in requests:
-#         result.append({
-#             # "leave_req_id": lr.leave_req_id,
-#             # "leave_req_emp_id": lr.leave_req_emp_id,
-#             # "emp_name": emp.emp_name,
-#             # "emp_department": emp.emp_department,
-#             # "leave_req_type": lr.leave_req_type,
-#             # "leave_req_from_dt": str(lr.leave_req_from_dt),
-#             # "leave_req_to_dt": str(lr.leave_req_to_dt),
-#             # "leave_req_reason": lr.leave_req_reason,
-#             # "leave_req_status": lr.leave_req_status,
-#             # "leave_req_l1_status": lr.leave_req_l1_status,
-#             # "leave_req_l2_status": lr.leave_req_l2_status,
-#             "id": lr.leave_req_id,
-#             "emp_id": lr.leave_req_emp_id,
-#             "employee_name": emp.emp_name,
-#             "emp_department": emp.emp_department,
-#             "leave_type_name": lr.leave_req_type,
-#             "start_date": str(lr.leave_req_from_dt),
-#             "end_date": str(lr.leave_req_to_dt),
-#             "reason": lr.leave_req_reason,
-#             "status": lr.leave_req_status,
-#             "l1_status": lr.leave_req_l1_status,
-#             "l2_status": lr.leave_req_l2_status,
-#         })
-#     return result
-
-# New way to get leave requests
-
 @app.get("/api/leave-requests/{emp_id}")
 def get_leave_requests(
     emp_id: int,
@@ -565,6 +593,8 @@ def get_leave_requests(
             "status": lr.leave_req_status,
             "l1_status": lr.leave_req_l1_status,
             "l2_status": lr.leave_req_l2_status,
+            "remarks": lr.remarks or "",
+            "applied_date": str(lr.leave_req_applied_dt) if lr.leave_req_applied_dt else "-",
         })
     print(f"[DEBUG] Returning {len(result)} leave requests")
     return result
@@ -579,6 +609,7 @@ async def create_leave_request(
     leave_from_dt: str = Form(...),
     leave_to_dt: str = Form(...),
     leave_reason: str = Form(...),
+    leave_applied_dt: str = Form(...),
 ):
     print(f"[DEBUG] Creating leave request for emp_id {emp_id} from {leave_from_dt} to {leave_to_dt}")
     session: Session = SessionLocal()
@@ -591,6 +622,27 @@ async def create_leave_request(
 
         from_date = datetime.strptime(leave_from_dt, "%Y-%m-%d").date()
         to_date = datetime.strptime(leave_to_dt, "%Y-%m-%d").date()
+        leave_applied_dt = datetime.strptime(leave_applied_dt, "%Y-%m-%d").date()
+
+        # Compute quantity (days). Adjust function if you want to include weekends/holidays.
+        print(f"[DEBUG] Calculating leave quantity from {from_date} to {to_date}")
+        qty = business_days_inclusive(from_date, to_date)
+        if qty <= 0:
+            session.close()
+            raise HTTPException(status_code=400, detail="Invalid date range")
+
+        # Check available balance snapshot
+        print(f"[DEBUG] Checking leave balance for emp_id {emp_id}, type {leave_type}")
+        snap = get_balance_snapshot(session, emp_id, leave_type)
+        if snap["available"] < qty:
+            session.close()
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "failed",
+                    "error": f"Insufficient balance. Available={snap['available']} required={qty}"
+                },
+            )
 
         leave_req = LeaveRequest(
             leave_req_emp_id=emp_id,
@@ -603,16 +655,199 @@ async def create_leave_request(
             leave_req_l2_status="Pending",
             leave_req_l1_id=emp.emp_l1,   # <-- Added!
             leave_req_l2_id=emp.emp_l2,   # <-- Added!
+            remarks = "",
+            leave_req_applied_dt = leave_applied_dt
         )
         session.add(leave_req)
+        session.flush()  # to get leave_req.leave_req_id
+        print(f"[DEBUG] Created leave_req_id {leave_req.leave_req_id}, recording HOLD in ledger")
+        ledger_hold(session, emp_id, leave_type, qty, leave_req.leave_req_id)
         session.commit()
         leave_req_id = leave_req.leave_req_id
         session.close()
         return {"status": "success", "leave_req_id": leave_req_id}
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
-        session.close()
+        # optional: log the stacktrace here
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+
+# Map your request leave type → LeaveBalance column name
+LEAVE_COL_MAP = {
+    "Casual Leave": "lt_casual_leave",
+    "Earned Leave": "lt_earned_leave",
+    "Half Pay Leave": "lt_half_pay_leave",
+    "Medical Leave": "lt_medical_leave",
+    "Special Leave": "lt_special_leave",
+    "Child Care Leave": "lt_child_care_leave",
+    "Parental Leave": "lt_parental_leave",
+    # Or if you use abbrevs, map those instead.
+}
+
+def business_days_inclusive(start_dt: datetime.date, end_dt: datetime.date) -> float:
+    """Simple version: count Mon–Fri only. No holiday table used here."""
+    if end_dt < start_dt:
+        return 0
+    days = 0
+    cur = start_dt
+    one = timedelta(days=1)
+    while cur <= end_dt:
+        if cur.weekday() < 5:  # 0=Mon ... 4=Fri
+            days += 1
+        cur += one
+    return float(days)
+
+def get_accrued(db: Session, emp_id: int, leave_type: str) -> float:
+    from app.models import LeaveBalance  # adjust import if split
+    col = LEAVE_COL_MAP.get(leave_type)
+    if not col:
+        return 0.0
+    row = db.query(LeaveBalance).filter(LeaveBalance.lt_emp_id == emp_id).one_or_none()
+    if not row:
+        return 0.0
+    return float(getattr(row, col) or 0)
+
+def sum_ledger(db: Session, emp_id: int, leave_type: str, action: str) -> float:
+    from app.models import LeaveLedger
+    total = db.query(func.coalesce(func.sum(LeaveLedger.ll_qty), 0.0))\
+              .filter(LeaveLedger.ll_emp_id == emp_id,
+                      LeaveLedger.ll_leave_type == leave_type,
+                      LeaveLedger.ll_action == action)\
+              .scalar()
+    return float(total or 0.0)
+
+def get_balance_snapshot(db: Session, emp_id: int, leave_type: str) -> dict:
+    accrued = get_accrued(db, emp_id, leave_type)
+    held = sum_ledger(db, emp_id, leave_type, "HOLD") - sum_ledger(db, emp_id, leave_type, "RELEASE")
+    committed = sum_ledger(db, emp_id, leave_type, "COMMIT")
+    available = accrued - committed - max(0.0, held)
+    return {"accrued": accrued, "held": max(0.0, held), "committed": committed, "available": available}
+
+def ledger_hold(db: Session, emp_id: int, leave_type: str, qty: float, req_id: int):
+    from app.models import LeaveLedger
+    db.add(LeaveLedger(
+        ll_emp_id=emp_id, ll_leave_type=leave_type, ll_qty=qty,
+        ll_action="HOLD", ll_ref_leave_req_id=req_id
+    ))
+
+def ledger_release(db: Session, emp_id: int, leave_type: str, qty: float, req_id: int):
+    from app.models import LeaveLedger
+    # Guard: release only if there is outstanding hold amount for this request
+    outstanding = db.query(func.coalesce(func.sum(LeaveLedger.ll_qty), 0.0))\
+        .filter(LeaveLedger.ll_emp_id == emp_id,
+                LeaveLedger.ll_leave_type == leave_type,
+                LeaveLedger.ll_ref_leave_req_id == req_id,
+                LeaveLedger.ll_action == "HOLD")\
+        .scalar()
+    already_released = db.query(func.coalesce(func.sum(LeaveLedger.ll_qty), 0.0))\
+        .filter(LeaveLedger.ll_emp_id == emp_id,
+                LeaveLedger.ll_leave_type == leave_type,
+                LeaveLedger.ll_ref_leave_req_id == req_id,
+                LeaveLedger.ll_action == "RELEASE")\
+        .scalar()
+    if float(outstanding or 0) <= float(already_released or 0):
+        return  # nothing to release (idempotent)
+    db.add(LeaveLedger(
+        ll_emp_id=emp_id, ll_leave_type=leave_type, ll_qty=qty,
+        ll_action="RELEASE", ll_ref_leave_req_id=req_id
+    ))
+
+def ledger_commit(db: Session, emp_id: int, leave_type: str, qty: float, req_id: int):
+    from app.models import LeaveLedger
+    # Idempotency: if already committed for this req, skip
+    exists = db.query(LeaveLedger)\
+        .filter(LeaveLedger.ll_ref_leave_req_id == req_id,
+                LeaveLedger.ll_action == "COMMIT").first()
+    if exists:
+        return
+    db.add(LeaveLedger(
+        ll_emp_id=emp_id, ll_leave_type=leave_type, ll_qty=qty,
+        ll_action="COMMIT", ll_ref_leave_req_id=req_id
+    ))
+
+
+@app.get("/api/leave-balance/snapshot")
+def get_leave_balance_snapshot(emp_id: int = Query(...), db: Session = Depends(get_db)):
+    """
+    Returns per-type balances using the HOLD/RELEASE/COMMIT ledger:
+      accrued   -> from leave_tbl
+      held      -> sum(HOLD) - sum(RELEASE)
+      committed -> sum(COMMIT)
+      available -> accrued - committed - max(0, held)
+    """
+    # 1) load the base accrual row
+    lb = db.query(LeaveBalance).filter(LeaveBalance.lt_emp_id == emp_id).one_or_none()
+    if not lb:
+        # if no row yet, just act as zeros for all types
+        base = {k: 0.0 for k in LEAVE_COL_MAP.keys()}
+    else:
+        base = {}
+        for leave_type, col_name in LEAVE_COL_MAP.items():
+            base[leave_type] = float(getattr(lb, col_name) or 0)
+
+    # 2) aggregate the ledger per type & action
+    #    result: { "Casual Leave": {"HOLD": 3, "RELEASE": 3, "COMMIT": 3}, ... }
+    from app.models import LeaveLedger  # import where your model lives
+    rows = (
+        db.query(
+            LeaveLedger.ll_leave_type.label("type"),
+            LeaveLedger.ll_action.label("action"),
+            func.coalesce(func.sum(LeaveLedger.ll_qty), 0.0).label("qty"),
+        )
+        .filter(LeaveLedger.ll_emp_id == emp_id)
+        .group_by(LeaveLedger.ll_leave_type, LeaveLedger.ll_action)
+        .all()
+    )
+
+    ledger = {}
+    for r in rows:
+        ledger.setdefault(r.type, {}).setdefault(r.action, 0.0)
+        ledger[r.type][r.action] += float(r.qty or 0.0)
+
+    # 3) build per-type snapshot
+    items = []
+    totals = {"accrued": 0.0, "held": 0.0, "committed": 0.0, "available": 0.0}
+
+    for leave_type in LEAVE_COL_MAP.keys():
+        accrued = base.get(leave_type, 0.0)
+        act = ledger.get(leave_type, {})
+        hold = float(act.get("HOLD", 0.0) - act.get("RELEASE", 0.0))
+        if hold < 0:
+            hold = 0.0  # clamp, should not go negative
+        committed = float(act.get("COMMIT", 0.0))
+        available = float(accrued - committed - hold)
+        if available < 0:
+            available = 0.0  # optional clamp
+
+        items.append({
+            "type": leave_type,
+            "accrued": round(accrued, 2),
+            "held": round(hold, 2),
+            "committed": round(committed, 2),
+            "available": round(available, 2),
+        })
+
+        totals["accrued"] += accrued
+        totals["held"] += hold
+        totals["committed"] += committed
+        totals["available"] += available
+
+    # round totals for neatness
+    for k in totals:
+        totals[k] = round(totals[k], 2)
+
+    return {
+        "emp_id": emp_id,
+        "types": items,
+        "totals": totals,
+    }
+
 
 
 @app.delete("/api/leave-requests/{leave_req_id}")
@@ -676,66 +911,6 @@ def create_attendance_request(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# For Attendance Request L1 Action
-
-# @app.put("/api/attendance-request/l1-action")
-# async def l1_attendance_action(
-#     art_id: int = Body(...),
-#     action: str = Body(...)
-# ):
-#     session = SessionLocal()
-#     try:
-#         req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
-#         if not req:
-#             session.close()
-#             return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
-#         if action == "approve":
-#             req.art_l1_status = "Approved"
-#             req.art_status = "L1 Approved"
-#         elif action == "reject":
-#             req.art_l1_status = "Rejected"
-#             req.art_status = "Rejected"
-#         else:
-#             session.close()
-#             return JSONResponse(status_code=400, content={"error": "Invalid action"})
-#         session.commit()
-#         session.close()
-#         return {"status": "success"}
-#     except Exception as e:
-#         session.rollback()
-#         session.close()
-#         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
-    
-# # For Attendance Request L2 Action
-
-# @app.put("/api/attendance-request/l2-action")
-# async def l2_attendance_action(
-#     art_id: int = Body(...),
-#     action: str = Body(...)
-# ):
-#     session = SessionLocal()
-#     try:
-#         req = session.query(AttendanceRequest).filter(AttendanceRequest.art_id == art_id).first()
-#         if not req:
-#             session.close()
-#             return JSONResponse(status_code=404, content={"error": "Attendance request not found"})
-#         if action == "approve":
-#             req.art_l2_status = "Approved"
-#             req.art_status = "Approved"
-#         elif action == "reject":
-#             req.art_l2_status = "Rejected"
-#             req.art_status = "Rejected"
-#         else:
-#             session.close()
-#             return JSONResponse(status_code=400, content={"error": "Invalid action"})
-#         session.commit()
-#         session.close()
-#         return {"status": "success"}
-#     except Exception as e:
-#         session.rollback()
-#         session.close()
-#         return JSONResponse(status_code=500, content={"status": "failed", "error": str(e)})
-# NEW: Combined L1/L2 action for Attendance Requests
 @app.put("/api/attendance-request/action")
 async def attendance_action(
     attendance_request_id: int = Body(...),
@@ -869,7 +1044,7 @@ def get_reporting_levels(emp_id: int = Query(...), l1_id: int = Query(...), l2_i
     finally:
         session.close()
 
-# gert attendance summary by user id
+# gert attendance summary by user id for report generation and calendar view
 @app.get("/api/attendance")
 def get_attendance(
     emp_id: int = Query(...),
@@ -896,7 +1071,8 @@ def get_attendance(
             present_days.append({
                 "date": rec.cct_date.strftime("%Y-%m-%d"),
                 "clockIn": clockin_str,
-                "clockOut": clockout_str
+                "clockOut": clockout_str,
+                "shift": rec.cct_shift_abbrv or "-"
             })
             # Average working hours
             if rec.cct_clockin_time and rec.cct_clockout_time:
@@ -950,6 +1126,117 @@ def get_attendance(
         }
     finally:
         session.close()
+
+# @app.get("/api/attendance")
+# def get_attendance(
+#     emp_id: int = Query(...),
+#     start: str = Query(...),
+#     end: str = Query(...),
+# ):
+#     session: Session = SessionLocal()
+#     try:
+#         # --- parse dates
+#         start_dt = datetime.strptime(start, "%Y-%m-%d").date()
+#         end_dt_req = datetime.strptime(end, "%Y-%m-%d").date()
+
+#         # only count up to *today in IST* so future days aren't marked absent
+#         today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+#         effective_end = min(end_dt_req, today_ist)
+
+#         # if range is entirely future, return zeros
+#         if start_dt > effective_end:
+#             return {
+#                 "attendance": [],
+#                 "holidays": [],
+#                 "absent": 0,
+#                 "average_working": "-",
+#                 "average_late": "-",
+#                 "shift": "-",
+#             }
+
+#         # fetch records only up to effective_end
+#         records = (
+#             session.query(ClockInClockOut)
+#             .filter(
+#                 ClockInClockOut.cct_emp_id == emp_id,
+#                 ClockInClockOut.cct_date >= start_dt,
+#                 ClockInClockOut.cct_date <= effective_end,
+#             )
+#             .all()
+#         )
+
+#         present_days = []
+#         total_working_mins = 0
+#         total_late_mins = 0
+#         late_standard = datetime.strptime("09:00", "%H:%M").time()
+
+#         for rec in records:
+#             clockin_str = rec.cct_clockin_time.strftime("%I:%M %p") if rec.cct_clockin_time else "-"
+#             clockout_str = rec.cct_clockout_time.strftime("%I:%M %p") if rec.cct_clockout_time else "-"
+#             present_days.append(
+#                 {
+#                     "date": rec.cct_date.strftime("%Y-%m-%d"),
+#                     "clockIn": clockin_str,
+#                     "clockOut": clockout_str,
+#                     "shift": rec.cct_shift_abbrv or "-",
+#                 }
+#             )
+
+#             if rec.cct_clockin_time and rec.cct_clockout_time:
+#                 t1 = datetime.combine(datetime.today(), rec.cct_clockin_time)
+#                 t2 = datetime.combine(datetime.today(), rec.cct_clockout_time)
+#                 total_working_mins += max(0, int((t2 - t1).total_seconds() / 60))
+
+#             if rec.cct_clockin_time:
+#                 late = (
+#                     datetime.combine(datetime.today(), rec.cct_clockin_time)
+#                     - datetime.combine(datetime.today(), late_standard)
+#                 ).total_seconds() / 60
+#                 total_late_mins += max(0, late)
+
+#         # count Mon–Fri working days in [start_dt .. effective_end]
+#         def working_days(a: date, b: date) -> int:
+#             cur = a
+#             cnt = 0
+#             one = timedelta(days=1)
+#             while cur <= b:
+#                 if cur.weekday() < 5:  # 0..4 => Mon..Fri
+#                     cnt += 1
+#                 cur += one
+#             return cnt
+
+#         num_present = len(present_days)
+#         total_working = working_days(start_dt, effective_end)
+#         absent = max(0, total_working - num_present)
+
+#         average_working = "-"
+#         average_late = "-"
+#         if num_present > 0:
+#             avg_mins = total_working_mins / num_present
+#             h, m = int(avg_mins // 60), int(avg_mins % 60)
+#             average_working = f"{h}h {m}m"
+
+#             avg_late = total_late_mins / num_present
+#             if avg_late < 1:
+#                 average_late = "On Time"
+#             else:
+#                 lh, lm = int(avg_late // 60), int(avg_late % 60)
+#                 average_late = f"{lh}h {lm}m"
+
+#         emp = session.query(Employee).filter(Employee.emp_id == emp_id).first()
+#         shift = getattr(emp, "emp_shift", "-") if emp else "-"
+
+#         return {
+#             "attendance": present_days,
+#             "holidays": [],
+#             "absent": absent,
+#             "average_working": average_working,
+#             "average_late": average_late,
+#             "shift": shift,
+#         }
+#     finally:
+#         session.close()
+
 
 
 @app.get("/api/leave-types")
